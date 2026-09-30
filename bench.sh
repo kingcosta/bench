@@ -1092,6 +1092,28 @@ get_warp_detailed_report() {
 # ==============================================================================
 # 10. Community Benchmark Upload & API Übermittlung
 # ==============================================================================
+clean_str_for_json() {
+    local s="$1"
+    # ANSI Escape Sequenzen und unzulässige Steuerzeichen entfernen
+    s=$(echo "$s" | sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tr -d '\r\n\t\000-\037')
+    # Backslashes und doppelte Anführungszeichen maskieren
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    # Vorangehende und nachfolgende Leerzeichen entfernen
+    s=$(echo "$s" | sed 's/^[ \t]*//;s/[ \t]*$//')
+    echo "$s"
+}
+
+clean_num_for_json() {
+    local n="$1"
+    n=$(echo "$n" | tr -cd '0-9.-')
+    if [[ -z "$n" || "$n" == "." || "$n" == "-" ]]; then
+        echo "0"
+    else
+        echo "$n"
+    fi
+}
+
 upload_benchmark() {
     if [ "$OPT_NO_UPLOAD" = true ]; then
         return
@@ -1145,46 +1167,79 @@ upload_benchmark() {
 
     echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}⏳ Übermittle Benchmark-Daten an ${BENCH_API_URL}...${C_RESET}"
 
+    # Werte strikt für valides JSON bereinigen
+    local safe_api_key=$(clean_str_for_json "$BENCH_API_KEY")
+    local safe_uname=$(clean_str_for_json "$uname")
+    local safe_uemail=$(clean_str_for_json "$uemail")
+    local safe_host=$(clean_str_for_json "$(hostname 2>/dev/null || echo 'Server')")
+    local safe_sys=$(clean_str_for_json "${SYS_MODEL_VAL:-Standard Server}")
+    local safe_virt=$(clean_str_for_json "${VIRT_TYPE_VAL:-Baremetal}")
+    local safe_os=$(clean_str_for_json "${OS_NAME_VAL:-Linux}")
+    local safe_kernel=$(clean_str_for_json "${KERNEL_VER_VAL:-$(uname -r)}")
+    local safe_cpu=$(clean_str_for_json "${CPU_MODEL_VAL:-Standard CPU}")
+    local safe_freq=$(clean_str_for_json "${CPU_FREQ_VAL:-N/A}")
+    local safe_ram_disp=$(clean_str_for_json "${RAM_DISPLAY_VAL:-}")
+    local safe_disk=$(clean_str_for_json "${DISK_MODEL_VAL:-SSD}")
+    local safe_warp_ip=$(clean_str_for_json "${WARP_IP_VAL:-}")
+    local safe_warp_loc=$(clean_str_for_json "${WARP_LOC_VAL:-}")
+    local safe_country=$(clean_str_for_json "${GEO_COUNTRY_VAL:-}")
+    local safe_city=$(clean_str_for_json "${GEO_CITY_VAL:-}")
+    local safe_isp=$(clean_str_for_json "${GEO_ISP_VAL:-}")
+
+    local safe_cores=$(clean_num_for_json "$CPU_CORES_VAL")
+    local safe_threads=$(clean_num_for_json "$CPU_THREADS_VAL")
+    local safe_aes=$(clean_num_for_json "$CPU_AES_NUM")
+    local safe_sha=$(clean_num_for_json "$CPU_SHA_NUM")
+    local safe_ram_mb=$(clean_num_for_json "$RAM_TOTAL_MB")
+    local safe_swap_mb=$(clean_num_for_json "$SWAP_TOTAL_MB")
+    local safe_io_avg=$(clean_num_for_json "$AVG_IO_NUM")
+    local safe_io_1=$(clean_num_for_json "$IO_RUN1_NUM")
+    local safe_io_2=$(clean_num_for_json "$IO_RUN2_NUM")
+    local safe_io_3=$(clean_num_for_json "$IO_RUN3_NUM")
+    local safe_net_peak=$(clean_num_for_json "$PEAK_NET_MBPS")
+    local safe_warp_stat=$([ "$WARP_IS_OK" = true ] && echo 1 || echo 0)
+    local safe_bbr_stat=$([ "$IS_BBR" = true ] && echo 1 || echo 0)
+
     # JSON Payload erstellen
     local json_payload
     json_payload=$(cat <<EOF
 {
-  "api_key": "${BENCH_API_KEY}",
-  "username": "${uname}",
-  "email": "${uemail}",
-  "hostname": "$(hostname 2>/dev/null || echo 'Server')",
-  "system_model": "${SYS_MODEL_VAL:-Standard Server}",
-  "virtualization": "${VIRT_TYPE_VAL:-Baremetal}",
-  "os_name": "${OS_NAME_VAL:-Linux}",
-  "kernel": "${KERNEL_VER_VAL:-$(uname -r)}",
-  "cpu_model": "${CPU_MODEL_VAL:-Standard CPU}",
-  "cpu_cores": ${CPU_CORES_VAL:-0},
-  "cpu_threads": ${CPU_THREADS_VAL:-0},
-  "cpu_freq": "${CPU_FREQ_VAL:-N/A}",
-  "cpu_aes_mbps": ${CPU_AES_NUM:-0},
-  "cpu_sha256_mbps": ${CPU_SHA_NUM:-0},
-  "ram_total_mb": ${RAM_TOTAL_MB:-0},
-  "ram_display": "${RAM_DISPLAY_VAL:-}",
-  "swap_total_mb": ${SWAP_TOTAL_MB:-0},
-  "disk_model": "${DISK_MODEL_VAL:-SSD}",
-  "disk_io_avg_mbps": ${AVG_IO_NUM:-0},
-  "disk_io_run1": ${IO_RUN1_NUM:-0},
-  "disk_io_run2": ${IO_RUN2_NUM:-0},
-  "disk_io_run3": ${IO_RUN3_NUM:-0},
-  "net_peak_mbps": ${PEAK_NET_MBPS:-0},
-  "warp_status": $([ "$WARP_IS_OK" = true ] && echo 1 || echo 0),
-  "warp_ip": "${WARP_IP_VAL:-}",
-  "warp_loc": "${WARP_LOC_VAL:-}",
-  "bbr_status": $([ "$IS_BBR" = true ] && echo 1 || echo 0),
-  "location_country": "${GEO_COUNTRY_VAL:-}",
-  "location_city": "${GEO_CITY_VAL:-}",
-  "isp_name": "${GEO_ISP_VAL:-}"
+  "api_key": "${safe_api_key}",
+  "username": "${safe_uname}",
+  "email": "${safe_uemail}",
+  "hostname": "${safe_host}",
+  "system_model": "${safe_sys}",
+  "virtualization": "${safe_virt}",
+  "os_name": "${safe_os}",
+  "kernel": "${safe_kernel}",
+  "cpu_model": "${safe_cpu}",
+  "cpu_cores": ${safe_cores},
+  "cpu_threads": ${safe_threads},
+  "cpu_freq": "${safe_freq}",
+  "cpu_aes_mbps": ${safe_aes},
+  "cpu_sha256_mbps": ${safe_sha},
+  "ram_total_mb": ${safe_ram_mb},
+  "ram_display": "${safe_ram_disp}",
+  "swap_total_mb": ${safe_swap_mb},
+  "disk_model": "${safe_disk}",
+  "disk_io_avg_mbps": ${safe_io_avg},
+  "disk_io_run1": ${safe_io_1},
+  "disk_io_run2": ${safe_io_2},
+  "disk_io_run3": ${safe_io_3},
+  "net_peak_mbps": ${safe_net_peak},
+  "warp_status": ${safe_warp_stat},
+  "warp_ip": "${safe_warp_ip}",
+  "warp_loc": "${safe_warp_loc}",
+  "bbr_status": ${safe_bbr_stat},
+  "location_country": "${safe_country}",
+  "location_city": "${safe_city}",
+  "isp_name": "${safe_isp}"
 }
 EOF
 )
 
     local response
-    response=$(curl -s -m 15 -X POST \
+    response=$(curl -sL -m 20 -X POST \
         -H "Content-Type: application/json" \
         -H "X-API-Key: ${BENCH_API_KEY}" \
         -d "$json_payload" \
