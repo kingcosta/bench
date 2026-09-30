@@ -66,7 +66,33 @@ VERSION="1.5.0"
 BENCH_DATE=$(date "+%d.%m.%Y %H:%M:%S %Z")
 BOX_WIDTH=78
 
-# Globale Variablen zur Auswertung
+# ==============================================================================
+# Web-API & Server Konfiguration
+# ==============================================================================
+BENCH_API_URL="${BENCH_API_URL:-"https://b88y.com/bench.php"}"
+BENCH_API_KEY="${BENCH_API_KEY:-"yourapikey123456abc"}"
+
+# Upload & CLI Steuerungs-Flags
+OPT_AUTO_UPLOAD=false
+OPT_NO_UPLOAD=false
+USER_NAME_INPUT=""
+USER_EMAIL_INPUT=""
+
+# Globale Variablen zur Auswertung & Übermittlung
+SYS_MODEL_VAL=""
+SYS_BOARD_VAL=""
+VIRT_TYPE_VAL=""
+OS_NAME_VAL=""
+KERNEL_VER_VAL=""
+CPU_MODEL_VAL=""
+CPU_CORES_VAL=0
+CPU_THREADS_VAL=0
+CPU_FREQ_VAL=""
+RAM_DISPLAY_VAL=""
+DISK_MODEL_VAL=""
+IO_RUN1_NUM=0
+IO_RUN2_NUM=0
+IO_RUN3_NUM=0
 AVG_IO_NUM=0
 PEAK_NET_MBPS=0
 SUM_NET_MBPS=0
@@ -79,6 +105,9 @@ WARP_IS_OK=false
 WARP_STATUS_TEXT=""
 WARP_IP_VAL=""
 WARP_LOC_VAL=""
+GEO_COUNTRY_VAL=""
+GEO_CITY_VAL=""
+GEO_ISP_VAL=""
 DISK_FULL_PERCENT=0
 RAM_TOTAL_MB=0
 SWAP_TOTAL_MB=0
@@ -297,6 +326,16 @@ get_system_info() {
 
     local ipv6_addr=$(curl -s -6 -m 3 https://api64.ipify.org 2>/dev/null || echo "Nicht zugewiesen / Deaktiviert")
 
+    # Globale Variablen für Community Upload sichern
+    SYS_MODEL_VAL="$sys_full"
+    SYS_BOARD_VAL="$board_info"
+    VIRT_TYPE_VAL="$virt_type"
+    OS_NAME_VAL="${os_name} (${arch})"
+    KERNEL_VER_VAL="$kernel_ver"
+    GEO_COUNTRY_VAL="$geo_country"
+    GEO_CITY_VAL="$geo_city"
+    GEO_ISP_VAL="$geo_isp"
+
     # Ausgabe Box 1
     box_row "System / Plattform" "${sys_full}"
     box_row "Mainboard & BIOS" "${board_info}"
@@ -385,6 +424,12 @@ get_cpu_details() {
     for f in "${features[@]}"; do
         [ -n "$feature_str" ] && feature_str="${feature_str} │ $f" || feature_str="$f"
     done
+
+    # Globale Variablen für Community Upload sichern
+    CPU_MODEL_VAL="$cpu_model"
+    CPU_CORES_VAL="$total_cores"
+    CPU_THREADS_VAL="$total_threads"
+    CPU_FREQ_VAL="${cur_freq}"
 
     # Ausgabe Box 2
     box_row "CPU Modell" "${cpu_model}"
@@ -564,6 +609,10 @@ get_storage_details() {
     local io_scheduler="N/A"
     [ -f "/sys/block/${root_dev}/queue/scheduler" ] && io_scheduler=$(cat "/sys/block/${root_dev}/queue/scheduler" 2>/dev/null | grep -o '\[.*\]' | tr -d '[]')
 
+    RAM_DISPLAY_VAL="${ram_display}"
+    DISK_MODEL_VAL=$(echo -e "$disk_list" | head -1 | sed 's/^[• \t]*//' | tr -d '\n')
+    [ -z "$DISK_MODEL_VAL" ] && DISK_MODEL_VAL="Standard Root-Laufwerk"
+
     box_row "Arbeitsspeicher (RAM)" "${ram_display}"
     box_row "Swap-Speicher" "${swap_display}"
     box_row "Swap-Einrichtung" "${SWAP_POSSIBLE_STATUS}"
@@ -608,6 +657,10 @@ get_disk_io() {
     [[ "$unit1" == *"GB/s"* || "$unit1" == *"GiB/s"* ]] && val1=$(awk -v v="$val1" 'BEGIN {print v * 1024}')
     [[ "$io2" == *"GB/s"* || "$io2" == *"GiB/s"* ]] && val2=$(awk -v v="$val2" 'BEGIN {print v * 1024}')
     [[ "$io3" == *"GB/s"* || "$io3" == *"GiB/s"* ]] && val3=$(awk -v v="$val3" 'BEGIN {print v * 1024}')
+
+    IO_RUN1_NUM=$(awk -v v="${val1:-0}" 'BEGIN {printf "%.2f", v}')
+    IO_RUN2_NUM=$(awk -v v="${val2:-0}" 'BEGIN {printf "%.2f", v}')
+    IO_RUN3_NUM=$(awk -v v="${val3:-0}" 'BEGIN {printf "%.2f", v}')
 
     local avg_io="N/A"
     if [[ -n "$val1" && -n "$val2" && -n "$val3" ]]; then
@@ -848,63 +901,125 @@ generate_tips() {
     # Tipp 1: Swap-Speicher einrichten (falls kein oder zu wenig Swap)
     if [ "$SWAP_TOTAL_MB" -lt 1024 ]; then
         tip_count=$((tip_count + 1))
-        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] Swap-Speicher einrichten (${REC_SWAP_GB} GB Swap-Datei für dein System):${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}Auf Basis deines RAMs (${RAM_TOTAL_MB} MB) und freien Festplattenplatzes (${DISK_FREE_GB} GB frei)${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}wird eine ${REC_SWAP_GB} GB Swap-Datei mit swappiness=10 empfohlen, um OOM-Abstürze zu verhindern:${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}# 1. Swap-Datei mit ${REC_SWAP_GB} GB anlegen & absichern:${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo fallocate -l ${REC_SWAP_GB}G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=$((REC_SWAP_GB * 1024))${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}📌 [Tipp $tip_count] Swap-Speicher einrichten (${REC_SWAP_GB} GB Swap-Datei für dein System):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}Basis: ${RAM_TOTAL_MB} MB RAM & ${DISK_FREE_GB} GB freier Speicherplatz auf /${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}# 2. Dauerhaft bei Systemstart aktivieren (/etc/fstab):${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_CYAN}⚙️ Auszuführende Befehle (Copy & Paste):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}sudo fallocate -l ${REC_SWAP_GB}G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=$((REC_SWAP_GB * 1024))${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}sudo sysctl -p${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}# 3. Kernel-Tuning (swappiness=10 nutzt RAM zuerst und schont die I/O):${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo sysctl -p${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_TITLE}🔍 Was die Befehle genau machen:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}fallocate / dd${C_RESET}  : Reserviert ${REC_SWAP_GB} GB Festplattenspeicher als zusammenhängende Datei."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}chmod 600${C_RESET}       : Setzt Berechtigung ausschließlich für root (verhindert Datenlecks)."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}mkswap / swapon${C_RESET} : Formatiert und schaltet den Auslagerungsspeicher sofort aktiv."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}/etc/fstab${C_RESET}      : Hängt den Swap bei jedem zukünftigen Server-Neustart automatisch ein."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}swappiness=10${C_RESET}   : Weist den Kernel an, den schnellen RAM bis zu 90% auszunutzen,"
+        echo -e "${C_BORDER}│${C_RESET}                                  bevor auf Festplatte ausgelagert wird (schont I/O und SSD)."
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_YELLOW}⚠️ Mögliche Nachteile & Risiken:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Speicherplatz: Belegt dauerhaft ${REC_SWAP_GB} GB auf deiner Root-Partition.${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Performance: Swap auf SSD/HDD ist deutlich langsamer als physischer RAM.${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}         ${C_DIM}Er dient als Puffer gegen OOM-Kills/Abstürze, nicht als RAM-Ersatz.${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
     # Tipp 2: TCP BBR
     if [ "$IS_BBR" = false ]; then
         tip_count=$((tip_count + 1))
-        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] TCP BBR aktivieren (Erhöht Download-/Upload-Raten signifikant):${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo 'net.core.default_qdisc=fq' | sudo tee -a /etc/sysctl.conf${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo 'net.ipv4.tcp_congestion_control=bbr' | sudo tee -a /etc/sysctl.conf${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo sysctl -p${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}📌 [Tipp $tip_count] TCP BBR aktivieren (Erhöht Download-/Upload-Durchsatz):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_CYAN}⚙️ Auszuführende Befehle (Copy & Paste):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}echo 'net.core.default_qdisc=fq' | sudo tee -a /etc/sysctl.conf${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}echo 'net.ipv4.tcp_congestion_control=bbr' | sudo tee -a /etc/sysctl.conf${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}sudo sysctl -p${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_TITLE}🔍 Was die Befehle genau machen:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}default_qdisc=fq${C_RESET} : Aktiviert Fair Queueing zur gleichmäßigen Paketverteilung."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}tcp_bbr${C_RESET}          : Googles BBR misst kontinuierlich Engpass-Bandbreite und RTT"
+        echo -e "${C_BORDER}│${C_RESET}                                  und drosselt nicht unnötig bei einzelnen Paketverlusten."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}sysctl -p${C_RESET}        : Lädt die Parameter sofort ohne Systemneustart."
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_YELLOW}⚠️ Mögliche Nachteile & Risiken:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Keine nennenswerten Nachteile auf modernen Servern (Linux Kernel >= 4.9).${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}BBR ist Standard bei Google & Cloudflare für maximale Datenraten.${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
     # Tipp 3: Cloudflare WARP 40000
     if [ "$WARP_IS_OK" = false ]; then
         tip_count=$((tip_count + 1))
-        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] Cloudflare WARP Server auf Port 40000 einrichten (SOCKS5):${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo apt install cloudflare-warp${C_RESET} ${C_DIM}# bzw. dnf/yum${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}warp-cli register && warp-cli set-mode proxy && warp-cli set-proxy-port 40000 && warp-cli connect${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}📌 [Tipp $tip_count] Cloudflare WARP als lokalen SOCKS5-Proxy auf Port 40000 einrichten:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_CYAN}⚙️ Auszuführende Befehle (Copy & Paste):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}sudo apt install cloudflare-warp${C_RESET} ${C_DIM}# bzw. dnf/yum${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}warp-cli register && warp-cli set-mode proxy && warp-cli set-proxy-port 40000 && warp-cli connect${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_TITLE}🔍 Was die Befehle genau machen:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}register${C_RESET}         : Registriert einen kostenlosen WARP Client-Schlüssel bei Cloudflare."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}set-mode proxy${C_RESET}   : Beschränkt WARP auf einen SOCKS5 Proxy (ändert KEIN globales Routing)."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}set-proxy-port${C_RESET}   : Öffnet den lokalen SOCKS5 Proxy auf 127.0.0.1:40000."
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_LABEL}connect${C_RESET}          : Baut den verschlüsselten Tunnel zum nächsten Cloudflare Colo auf."
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_YELLOW}⚠️ Mögliche Nachteile & Risiken:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Ressourcen: Der Hintergrunddienst warp-svc belegt ca. 20–40 MB RAM.${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Webseiten-Captchas: Ausgehender Traffic über SOCKS5 läuft über Cloudflare-IPs;${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}         ${C_DIM}einzelne Webseiten könnten vereinzelt Captchas oder Bot-Prüfungen anfordern.${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
     # Tipp 4: CPU Host-Passthrough
     if [ "$HAS_AES" = false ]; then
         tip_count=$((tip_count + 1))
-        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] CPU Hardware-Befehlssätze aktivieren (AES-NI fehlt):${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}Falls dieser Server in Proxmox/KVM läuft: Ändere den CPU-Typ auf ${C_RESET}${C_WHITE}'host'${C_RESET}${C_DIM}.${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}📌 [Tipp $tip_count] CPU Hardware-Befehlssätze aktivieren (AES-NI fehlt):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_CYAN}⚙️ Auszuführende Aktion:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_DIM}In Proxmox / KVM / Virt-Manager: VM-Hardware ➜ CPU ➜ Typ auf ${C_RESET}${C_WHITE}'host'${C_RESET}${C_DIM} stellen.${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_TITLE}🔍 Was diese Änderung genau macht:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • Schaltet die nativen CPU-Instruktionen des physischen Host-Prozessors"
+        echo -e "${C_BORDER}│${C_RESET}         (AES-NI, AVX, AVX2, AVX-512) direkt für deine VM frei."
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_YELLOW}⚠️ Mögliche Nachteile & Risiken:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Live-Migration: In Multi-Node Clustern können VMs nur zwischen Nodes mit${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}         ${C_DIM}identischer CPU-Generation ohne Neustart verschoben werden.${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Erfordert einen kurzen Neustart der virtuellen Maschine.${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
     # Tipp 5: SSD TRIM
     if (( $(echo "$AVG_IO_NUM < 600 && $AVG_IO_NUM > 0" | bc -l 2>/dev/null || awk -v v="$AVG_IO_NUM" 'BEGIN{print (v<600 && v>0)}') )); then
         tip_count=$((tip_count + 1))
-        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] SSD Wartung / TRIM aktivieren (Verhindert I/O-Performance-Verlust):${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo systemctl enable --now fstrim.timer${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}📌 [Tipp $tip_count] SSD Wartung / TRIM aktivieren (Verhindert I/O-Leistungsabfall):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_CYAN}⚙️ Auszuführender Befehl (Copy & Paste):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}sudo systemctl enable --now fstrim.timer${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_TITLE}🔍 Was der Befehl genau macht:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • Aktiviert einen wöchentlichen Dienst, der dem SSD-Controller meldet,"
+        echo -e "${C_BORDER}│${C_RESET}         welche gelöschten Speicherblöcke freigegeben und bereinigt werden können."
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_YELLOW}⚠️ Mögliche Nachteile & Risiken:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Keine Nachteile bei modernen SSDs/NVMe. Erhält Schreibraten dauerhaft hoch.${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
     # Tipp 6: Speicherplatz
     if [ "$DISK_FULL_PERCENT" -ge 85 ]; then
         tip_count=$((tip_count + 1))
-        echo -e "${C_BORDER}│${C_RESET}  ${C_RED}[Warnung] Speicherplatz zu ${DISK_FULL_PERCENT}% belegt:${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo journalctl --vacuum-time=3d && sudo apt clean${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_RED}📌 [Warnung] Speicherplatz zu ${DISK_FULL_PERCENT}% belegt (Bereinigung empfohlen):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_CYAN}⚙️ Auszuführender Befehl (Copy & Paste):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       ${C_WHITE}sudo journalctl --vacuum-time=3d && sudo apt clean${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_TITLE}🔍 Was der Befehl genau macht:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • Löscht alte System-Logs (> 3 Tage) und leert den Paket-Cache (/var/cache/apt)."
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_YELLOW}⚠️ Mögliche Nachteile & Risiken:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}       • ${C_DIM}Alte Systemlogs (> 3 Tage) stehen für nachträgliche Analysen nicht mehr bereit.${C_RESET}"
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
@@ -975,18 +1090,147 @@ get_warp_detailed_report() {
 }
 
 # ==============================================================================
+# 10. Community Benchmark Upload & API Übermittlung
+# ==============================================================================
+upload_benchmark() {
+    if [ "$OPT_NO_UPLOAD" = true ]; then
+        return
+    fi
+
+    box_section_header "🌐" "COMMUNITY BENCHMARK UPLOAD"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_TITLE}Möchtest du dieses Benchmark-Ergebnis auf ${C_CYAN}${BENCH_API_URL}${C_TITLE} einreichen?${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}Ermöglicht den direkten Vergleich mit anderen Servern auf der Web-Rangliste.${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}"
+
+    local do_upload="y"
+    if [ "$OPT_AUTO_UPLOAD" != true ]; then
+        local user_choice="y"
+        if [ -t 0 ]; then
+            read -r -p "   Ergebnis jetzt veröffentlichen? [J/n]: " user_choice
+        elif [ -e /dev/tty ]; then
+            read -r -p "   Ergebnis jetzt veröffentlichen? [J/n]: " user_choice < /dev/tty
+        else
+            user_choice="n"
+        fi
+        [[ "$user_choice" =~ ^[nN] ]] && do_upload="n"
+    fi
+
+    if [ "$do_upload" != "y" ]; then
+        echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}Upload übersprungen. Ergebnis bleibt lokal auf diesem Server.${C_RESET}"
+        box_section_footer
+        return
+    fi
+
+    # Benutzername erfassen
+    local uname="$USER_NAME_INPUT"
+    if [ -z "$uname" ]; then
+        local def_user="${USER:-$(hostname 2>/dev/null || echo 'Anonymous')}"
+        if [ -t 0 ]; then
+            read -r -p "   Benutzername für die Rangliste [Standard: ${def_user}]: " uname
+        elif [ -e /dev/tty ]; then
+            read -r -p "   Benutzername für die Rangliste [Standard: ${def_user}]: " uname < /dev/tty
+        fi
+        [ -z "$uname" ] && uname="$def_user"
+    fi
+
+    # Optionale E-Mail erfassen
+    local uemail="$USER_EMAIL_INPUT"
+    if [ -z "$uemail" ] && [ "$OPT_AUTO_UPLOAD" != true ]; then
+        if [ -t 0 ]; then
+            read -r -p "   E-Mail-Adresse (Optional, unmaskiert öffentlich): " uemail
+        elif [ -e /dev/tty ]; then
+            read -r -p "   E-Mail-Adresse (Optional, unmaskiert öffentlich): " uemail < /dev/tty
+        fi
+    fi
+
+    echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}⏳ Übermittle Benchmark-Daten an ${BENCH_API_URL}...${C_RESET}"
+
+    # JSON Payload erstellen
+    local json_payload
+    json_payload=$(cat <<EOF
+{
+  "api_key": "${BENCH_API_KEY}",
+  "username": "${uname}",
+  "email": "${uemail}",
+  "hostname": "$(hostname 2>/dev/null || echo 'Server')",
+  "system_model": "${SYS_MODEL_VAL:-Standard Server}",
+  "virtualization": "${VIRT_TYPE_VAL:-Baremetal}",
+  "os_name": "${OS_NAME_VAL:-Linux}",
+  "kernel": "${KERNEL_VER_VAL:-$(uname -r)}",
+  "cpu_model": "${CPU_MODEL_VAL:-Standard CPU}",
+  "cpu_cores": ${CPU_CORES_VAL:-0},
+  "cpu_threads": ${CPU_THREADS_VAL:-0},
+  "cpu_freq": "${CPU_FREQ_VAL:-N/A}",
+  "cpu_aes_mbps": ${CPU_AES_NUM:-0},
+  "cpu_sha256_mbps": ${CPU_SHA_NUM:-0},
+  "ram_total_mb": ${RAM_TOTAL_MB:-0},
+  "ram_display": "${RAM_DISPLAY_VAL:-}",
+  "swap_total_mb": ${SWAP_TOTAL_MB:-0},
+  "disk_model": "${DISK_MODEL_VAL:-SSD}",
+  "disk_io_avg_mbps": ${AVG_IO_NUM:-0},
+  "disk_io_run1": ${IO_RUN1_NUM:-0},
+  "disk_io_run2": ${IO_RUN2_NUM:-0},
+  "disk_io_run3": ${IO_RUN3_NUM:-0},
+  "net_peak_mbps": ${PEAK_NET_MBPS:-0},
+  "warp_status": $([ "$WARP_IS_OK" = true ] && echo 1 || echo 0),
+  "warp_ip": "${WARP_IP_VAL:-}",
+  "warp_loc": "${WARP_LOC_VAL:-}",
+  "bbr_status": $([ "$IS_BBR" = true ] && echo 1 || echo 0),
+  "location_country": "${GEO_COUNTRY_VAL:-}",
+  "location_city": "${GEO_CITY_VAL:-}",
+  "isp_name": "${GEO_ISP_VAL:-}"
+}
+EOF
+)
+
+    local response
+    response=$(curl -s -m 15 -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: ${BENCH_API_KEY}" \
+        -d "$json_payload" \
+        "${BENCH_API_URL}?action=submit" 2>/dev/null)
+
+    local is_success=$(echo "$response" | grep -o '"status":"success"' || echo "$response" | grep -o '"status": "success"')
+    if [ -n "$is_success" ]; then
+        local view_url=$(echo "$response" | grep -o '"view_url":"[^"]*' | cut -d'"' -f4)
+        [ -z "$view_url" ] && view_url=$(echo "$response" | grep -o '"view_url": "[^"]*' | cut -d'"' -f4)
+        [ -z "$view_url" ] && view_url="${BENCH_API_URL}"
+
+        echo -e "${C_BORDER}│${C_RESET}  ${C_GREEN}${C_BOLD}✔ Benchmark erfolgreich hochgeladen und gespeichert!${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_LABEL}🔗 Online-Ergebnis & Rangliste:${C_RESET} ${C_CYAN}${C_BOLD}${view_url}${C_RESET}"
+    else
+        local err_msg=$(echo "$response" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        [ -z "$err_msg" ] && err_msg=$(echo "$response" | grep -o '"message": "[^"]*' | cut -d'"' -f4)
+        [ -z "$err_msg" ] && err_msg="Keine Verbindung zur API oder ungültige Antwort."
+
+        echo -e "${C_BORDER}│${C_RESET}  ${C_RED}✖ Fehler beim Upload:${C_RESET} ${err_msg}"
+        echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}Bitte prüfe BENCH_API_URL (${BENCH_API_URL}) und BENCH_API_KEY in der bench.sh.${C_RESET}"
+    fi
+
+    box_section_footer
+}
+
+# ==============================================================================
 # Hilfe & Parameter-Verarbeitung
 # ==============================================================================
 show_help() {
-    echo -e "${C_BOLD}Verwendung:${C_RESET} $0 [OPTION]"
+    echo -e "${C_BOLD}Verwendung:${C_RESET} $0 [OPTIONEN]"
     echo ""
-    echo -e "${C_BOLD}Verfügbare Optionen:${C_RESET}"
-    echo -e "  ${C_CYAN}-i,   --info${C_RESET}       Nur Hardware- & System-Informationen anzeigen"
-    echo -e "  ${C_CYAN}-w,   --warp${C_RESET}       Ausführliche Cloudflare WARP (Port 40000) Diagnose"
-    echo -e "  ${C_CYAN}-io,  --disk${C_RESET}       Nur Festplatten I/O Benchmark ausführen"
-    echo -e "  ${C_CYAN}-c,   --cpu${C_RESET}        Nur CPU Krypto-Benchmark ausführen"
-    echo -e "  ${C_CYAN}-net, --network${C_RESET}    Nur Netzwerk-Geschwindigkeitstest ausführen"
-    echo -e "  ${C_CYAN}-h,   --help${C_RESET}       Diese Hilfe anzeigen"
+    echo -e "${C_BOLD}Benchmark-Modi:${C_RESET}"
+    echo -e "  ${C_CYAN}-i,   --info${C_RESET}          Nur Hardware- & System-Informationen anzeigen"
+    echo -e "  ${C_CYAN}-w,   --warp${C_RESET}          Ausführliche Cloudflare WARP (Port 40000) Diagnose"
+    echo -e "  ${C_CYAN}-io,  --disk${C_RESET}          Nur Festplatten I/O Benchmark ausführen"
+    echo -e "  ${C_CYAN}-c,   --cpu${C_RESET}           Nur CPU Krypto-Benchmark ausführen"
+    echo -e "  ${C_CYAN}-net, --network${C_RESET}       Nur Netzwerk-Geschwindigkeitstest ausführen"
+    echo ""
+    echo -e "${C_BOLD}Upload & Community Optionen:${C_RESET}"
+    echo -e "  ${C_CYAN}-u,   --upload${C_RESET}        Ergebnis nach dem Test automatisch einreichen"
+    echo -e "  ${C_CYAN}      --no-upload${C_RESET}     Upload-Abfrage am Ende überspringen"
+    echo -e "  ${C_CYAN}      --user <Name>${C_RESET}   Benutzername für die Rangliste festlegen"
+    echo -e "  ${C_CYAN}      --email <Mail>${C_RESET}  E-Mail-Adresse für die Rangliste festlegen"
+    echo -e "  ${C_CYAN}      --api <URL>${C_RESET}     Eigene bench.php API-URL angeben"
+    echo -e "  ${C_CYAN}      --key <Key>${C_RESET}     API-Schlüssel für die Übermittlung angeben"
+    echo -e "  ${C_CYAN}-h,   --help${C_RESET}          Diese Hilfe anzeigen"
     echo ""
     echo "Ohne Parameter wird der vollständige Benchmark ausgeführt"
     echo "inklusive erweiterter Hardware-Diagnose, Bewertung und Optimierungstipps."
@@ -997,36 +1241,88 @@ show_help() {
 # Hauptprogramm
 # ==============================================================================
 main() {
-    local opt="$1"
+    local run_mode="full"
 
-    case "$opt" in
-        -i|--info)
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -i|--info)
+                run_mode="info"
+                shift
+                ;;
+            -w|--warp)
+                run_mode="warp"
+                shift
+                ;;
+            -io|--disk)
+                run_mode="disk"
+                shift
+                ;;
+            -c|--cpu)
+                run_mode="cpu"
+                shift
+                ;;
+            -net|--network)
+                run_mode="network"
+                shift
+                ;;
+            -u|--upload)
+                OPT_AUTO_UPLOAD=true
+                shift
+                ;;
+            --no-upload)
+                OPT_NO_UPLOAD=true
+                shift
+                ;;
+            --user|--name|-name)
+                USER_NAME_INPUT="$2"
+                shift 2
+                ;;
+            --email|-e)
+                USER_EMAIL_INPUT="$2"
+                shift 2
+                ;;
+            --api)
+                BENCH_API_URL="$2"
+                shift 2
+                ;;
+            --key)
+                BENCH_API_KEY="$2"
+                shift 2
+                ;;
+            -h|--help)
+                show_help
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    case "$run_mode" in
+        info)
             print_banner
             get_system_info
             get_cpu_details
             get_gpu_details
             get_storage_details
             ;;
-        -w|--warp)
+        warp)
             print_banner
             get_warp_detailed_report
             ;;
-        -io|--disk)
+        disk)
             print_banner
             get_disk_io
             ;;
-        -c|--cpu)
+        cpu)
             print_banner
             get_cpu_benchmark
             ;;
-        -net|--network)
+        network)
             print_banner
             get_network_speed
             ;;
-        -h|--help)
-            show_help
-            ;;
-        *)
+        full)
             print_banner
             get_system_info
             get_cpu_details
@@ -1037,13 +1333,15 @@ main() {
             get_network_speed
             generate_evaluation
             generate_tips
+            upload_benchmark
             ;;
     esac
 
     echo ""
     echo -e "${C_GREEN}${C_BOLD}  ✔ Benchmark & Hardware-Diagnose erfolgreich abgeschlossen!${C_RESET}"
     echo -e "${C_BORDER}════════════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo -e "  ${C_DIM}GitHub Repository:${C_RESET} ${C_CYAN}https://github.com/kingcosta/bench${C_RESET}"
+    echo -e "  ${C_LABEL}Web-Interface & Rangliste:${C_RESET} ${C_CYAN}${BENCH_API_URL}${C_RESET}"
+    echo -e "  ${C_LABEL}GitHub Repository:${C_RESET}         ${C_CYAN}https://github.com/kingcosta/bench${C_RESET}"
     echo ""
 }
 
