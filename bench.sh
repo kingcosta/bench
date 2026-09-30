@@ -114,6 +114,7 @@ SWAP_TOTAL_MB=0
 DISK_FREE_GB=0
 REC_SWAP_GB=4
 SWAP_POSSIBLE_STATUS=""
+TOTAL_SCORE_VAL=0
 
 # Temporäres Verzeichnis für I/O Tests
 TMP_DIR=$(mktemp -d 2>/dev/null || echo "/tmp/bench_tmp_$$")
@@ -892,6 +893,60 @@ generate_evaluation() {
 }
 
 # ==============================================================================
+# 8.5 Costa Server Performance Score
+# ==============================================================================
+calculate_performance_score() {
+    local aes=${CPU_AES_NUM:-0}
+    local sha=${CPU_SHA_NUM:-0}
+    local cores=${CPU_CORES_VAL:-1}
+    local io=${AVG_IO_NUM:-0}
+    local net=${PEAK_NET_MBPS:-0}
+    local ram_mb=${RAM_TOTAL_MB:-0}
+    
+    local score_data
+    score_data=$(awk -v aes="$aes" -v sha="$sha" -v cores="$cores" -v io="$io" -v net="$net" -v ram="$ram_mb" -v bbr="$IS_BBR" -v warp="$WARP_IS_OK" 'BEGIN {
+        cpu_s = (aes * 0.4) + (sha * 0.3) + (cores * 250);
+        io_s  = io * 1.5;
+        net_s = net * 1.2;
+        ram_s = (ram / 1024.0) * 80;
+        bonus = (bbr == "true" ? 250 : 0) + (warp == "true" ? 350 : 0);
+        total = int(cpu_s + io_s + net_s + ram_s + bonus + 0.5);
+        if (total < 10) total = 10;
+        printf "%d|%d|%d|%d|%d|%d", total, int(cpu_s), int(io_s), int(net_s), int(ram_s), int(bonus);
+    }')
+    
+    TOTAL_SCORE_VAL=$(echo "$score_data" | cut -d'|' -f1)
+    local s_cpu=$(echo "$score_data" | cut -d'|' -f2)
+    local s_io=$(echo "$score_data" | cut -d'|' -f3)
+    local s_net=$(echo "$score_data" | cut -d'|' -f4)
+    local s_ram=$(echo "$score_data" | cut -d'|' -f5)
+    local s_bonus=$(echo "$score_data" | cut -d'|' -f6)
+
+    local tier_name="📦 Entry-Level Server"
+    local tier_col="${C_YELLOW}"
+    if [ "$TOTAL_SCORE_VAL" -ge 15000 ]; then
+        tier_name="👑 Enterprise / Dedicated High-End"
+        tier_col="${C_MAGENTA}"
+    elif [ "$TOTAL_SCORE_VAL" -ge 7500 ]; then
+        tier_name="🚀 High-Performance Cloud Node"
+        tier_col="${C_CYAN}"
+    elif [ "$TOTAL_SCORE_VAL" -ge 3000 ]; then
+        tier_name="⚡ Power VPS / Standard Server"
+        tier_col="${C_GREEN}"
+    fi
+
+    box_section_header "🏆" "COSTA SERVER PERFORMANCE SCORE"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_LABEL}Gesamt-Score               :${C_RESET} ${C_YELLOW}${C_BOLD}★ ${TOTAL_SCORE_VAL} PUNKTE ★${C_RESET} ${C_DIM}[Rangliste: ${BENCH_API_URL}]${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_LABEL}Performance-Einstufung     :${C_RESET} ${tier_col}${C_BOLD}${tier_name}${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}├─ CPU & Krypto-Index      : ${s_cpu} Pkt (AES/SHA256 + ${cores} Cores)${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}├─ Festplatten I/O-Index   : ${s_io} Pkt (Ø ${io} MB/s)${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}├─ Netzwerk Peak-Index     : ${s_net} Pkt (Peak ${net} Mbps)${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}├─ Speicher-Index          : ${s_ram} Pkt (${RAM_DISPLAY_VAL:-RAM})${C_RESET}"
+    echo -e "${C_BORDER}│${C_RESET}  ${C_DIM}└─ Stack-Optimierung       : +${s_bonus} Pkt Bonus (BBR: $([ "$IS_BBR" = true ] && echo '+250' || echo '0') │ WARP: $([ "$WARP_IS_OK" = true ] && echo '+350' || echo '0'))${C_RESET}"
+    box_section_footer
+}
+
+# ==============================================================================
 # 9. Optimierungs-Tipps & Empfehlungen
 # ==============================================================================
 generate_tips() {
@@ -1197,6 +1252,7 @@ upload_benchmark() {
     local safe_io_2=$(clean_num_for_json "$IO_RUN2_NUM")
     local safe_io_3=$(clean_num_for_json "$IO_RUN3_NUM")
     local safe_net_peak=$(clean_num_for_json "$PEAK_NET_MBPS")
+    local safe_score=$(clean_num_for_json "$TOTAL_SCORE_VAL")
     local safe_warp_stat=$([ "$WARP_IS_OK" = true ] && echo 1 || echo 0)
     local safe_bbr_stat=$([ "$IS_BBR" = true ] && echo 1 || echo 0)
 
@@ -1227,6 +1283,7 @@ upload_benchmark() {
   "disk_io_run2": ${safe_io_2},
   "disk_io_run3": ${safe_io_3},
   "net_peak_mbps": ${safe_net_peak},
+  "score": ${safe_score},
   "warp_status": ${safe_warp_stat},
   "warp_ip": "${safe_warp_ip}",
   "warp_loc": "${safe_warp_loc}",
@@ -1386,6 +1443,7 @@ main() {
             get_disk_io
             get_cpu_benchmark
             get_network_speed
+            calculate_performance_score
             generate_evaluation
             generate_tips
             upload_benchmark
