@@ -62,7 +62,7 @@ else
 fi
 
 # Metadaten
-VERSION="1.4.0"
+VERSION="1.5.0"
 BENCH_DATE=$(date "+%d.%m.%Y %H:%M:%S %Z")
 BOX_WIDTH=78
 
@@ -80,6 +80,11 @@ WARP_STATUS_TEXT=""
 WARP_IP_VAL=""
 WARP_LOC_VAL=""
 DISK_FULL_PERCENT=0
+RAM_TOTAL_MB=0
+SWAP_TOTAL_MB=0
+DISK_FREE_GB=0
+REC_SWAP_GB=4
+SWAP_POSSIBLE_STATUS=""
 
 # Temporäres Verzeichnis für I/O Tests
 TMP_DIR=$(mktemp -d 2>/dev/null || echo "/tmp/bench_tmp_$$")
@@ -465,6 +470,32 @@ get_storage_details() {
     local ram_avail=$(free -h | awk '/Mem:/ {print $7}')
     [ -z "$ram_avail" ] && ram_avail="$ram_free"
 
+    # RAM & Swap Werte numerisch in MB für Analyse erfassen
+    RAM_TOTAL_MB=$(awk '/MemTotal:/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo "4096")
+    SWAP_TOTAL_MB=$(awk '/SwapTotal:/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo "0")
+    DISK_FREE_GB=$(df -BG / | awk 'NR==2 {print $4}' | tr -d 'G')
+    [ -z "$DISK_FREE_GB" ] && DISK_FREE_GB=10
+
+    # Optimale Swap-Größe dynamisch nach Best Practices berechnen
+    if [ "$RAM_TOTAL_MB" -le 2048 ]; then
+        REC_SWAP_GB=2
+    elif [ "$RAM_TOTAL_MB" -le 6144 ]; then
+        REC_SWAP_GB=4
+    elif [ "$RAM_TOTAL_MB" -le 16384 ]; then
+        REC_SWAP_GB=6
+    else
+        REC_SWAP_GB=8
+    fi
+
+    # Prüfen ob Swap eingerichtet werden kann
+    if [[ "$VIRT_TYPE" =~ (OpenVZ|Docker|LXC) ]]; then
+        SWAP_POSSIBLE_STATUS="${C_YELLOW}Eingeschränkt${C_RESET} ${C_DIM}(Container; muss vom Host zugewiesen werden)${C_RESET}"
+    elif [ "$DISK_FREE_GB" -lt "$REC_SWAP_GB" ]; then
+        SWAP_POSSIBLE_STATUS="${C_RED}Nicht genügend Platz${C_RESET} ${C_DIM}(Nur ${DISK_FREE_GB} GB frei auf /; ${REC_SWAP_GB} GB benötigt)${C_RESET}"
+    else
+        SWAP_POSSIBLE_STATUS="${C_GREEN}Möglich${C_RESET} ${C_DIM}(${DISK_FREE_GB} GB frei auf / ➜ ${C_RESET}${C_VALUE}${REC_SWAP_GB} GB empfohlen${C_RESET}${C_DIM})${C_RESET}"
+    fi
+
     # RAM Typ (DDR4/DDR5/ECC) falls dmidecode verfügbar und mit Rechten
     local ram_type_speed=""
     if check_tool dmidecode && [ "$EUID" -eq 0 ]; then
@@ -535,6 +566,7 @@ get_storage_details() {
 
     box_row "Arbeitsspeicher (RAM)" "${ram_display}"
     box_row "Swap-Speicher" "${swap_display}"
+    box_row "Swap-Einrichtung" "${SWAP_POSSIBLE_STATUS}"
     box_row "Root Partition (/)" "${root_total} ${C_DIM}(Belegt: ${root_used} [${root_usage}] │ Frei: ${root_free} │ Dateisystem: ${root_fs})${C_RESET}"
     box_row "I/O Scheduler" "${io_scheduler:-none}"
 
@@ -771,12 +803,27 @@ generate_evaluation() {
     fi
     printf "${C_BORDER}│${C_RESET}  %-24s : %-16b %b\n" "CPU Krypto-Power" "$cpu_badge" "$cpu_desc"
 
-    # 4. Cloudflare WARP & TCP BBR
+    # 4. Swap-Speicher
+    local swap_badge=""
+    local swap_desc=""
+    if [ "$SWAP_TOTAL_MB" -ge 1024 ]; then
+        swap_badge="${C_GREEN}● AKTIV${C_RESET}"
+        swap_desc="${C_VALUE}${SWAP_TOTAL_MB} MB Swap${C_RESET} ${C_DIM}➜ Ausreichend Puffer zur Vermeidung von Linux OOM-Kills bei RAM-Spitzen.${C_RESET}"
+    elif [ "$SWAP_TOTAL_MB" -gt 0 ]; then
+        swap_badge="${C_YELLOW}▲ GERING${C_RESET}"
+        swap_desc="${C_VALUE}${SWAP_TOTAL_MB} MB Swap${C_RESET} ${C_DIM}➜ Swap ist relativ klein; ${REC_SWAP_GB} GB werden für dieses System empfohlen.${C_RESET}"
+    else
+        swap_badge="${C_YELLOW}▲ KEIN SWAP${C_RESET}"
+        swap_desc="${C_DIM}0B Swap aktiv. Bei voller RAM-Auslastung droht sofortiger Prozess-Absturz (OOM-Kill).${C_RESET}"
+    fi
+    printf "${C_BORDER}│${C_RESET}  %-24s : %-16b %b\n" "Swap-Speicher" "$swap_badge" "$swap_desc"
+
+    # 5. Cloudflare WARP & TCP BBR
     local warp_badge="${C_RED}○ INAKTIV${C_RESET}"
     local warp_desc="${C_DIM}Port 40000 ist nicht erreichbar / WARP nicht eingerichtet.${C_RESET}"
     if [ "$WARP_IS_OK" = true ]; then
         warp_badge="${C_GREEN}● BEREIT${C_RESET}"
-        warp_desc="${C_DIM}WARP SOCKS5 Proxy auf Port 40000 aktiv und leitet Traffic über Cloudflare.${C_RESET}"
+        warp_desc="${C_DIM}WARP SOCKS5 Proxy auf Port 40000 aktiv (IP: ${WARP_IP_VAL:-104.28.x.x} [${WARP_LOC_VAL:-Cloudflare}]) und leitet Traffic.${C_RESET}"
     fi
     printf "${C_BORDER}│${C_RESET}  %-24s : %-16b %b\n" "Cloudflare WARP (40000)" "$warp_badge" "$warp_desc"
 
@@ -798,7 +845,27 @@ generate_tips() {
     box_section_header "💡" "EMPFEHLUNGEN & OPTIMIERUNGS-TIPPS"
     local tip_count=0
 
-    # Tipp 1: TCP BBR
+    # Tipp 1: Swap-Speicher einrichten (falls kein oder zu wenig Swap)
+    if [ "$SWAP_TOTAL_MB" -lt 1024 ]; then
+        tip_count=$((tip_count + 1))
+        echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] Swap-Speicher einrichten (${REC_SWAP_GB} GB Swap-Datei für dein System):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}Auf Basis deines RAMs (${RAM_TOTAL_MB} MB) und freien Festplattenplatzes (${DISK_FREE_GB} GB frei)${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}wird eine ${REC_SWAP_GB} GB Swap-Datei mit swappiness=10 empfohlen, um OOM-Abstürze zu verhindern:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}# 1. Swap-Datei mit ${REC_SWAP_GB} GB anlegen & absichern:${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo fallocate -l ${REC_SWAP_GB}G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=$((REC_SWAP_GB * 1024))${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}# 2. Dauerhaft bei Systemstart aktivieren (/etc/fstab):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}# 3. Kernel-Tuning (swappiness=10 nutzt RAM zuerst und schont die I/O):${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_WHITE}sudo sysctl -p${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}"
+    fi
+
+    # Tipp 2: TCP BBR
     if [ "$IS_BBR" = false ]; then
         tip_count=$((tip_count + 1))
         echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] TCP BBR aktivieren (Erhöht Download-/Upload-Raten signifikant):${C_RESET}"
@@ -808,7 +875,7 @@ generate_tips() {
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
-    # Tipp 2: Cloudflare WARP 40000
+    # Tipp 3: Cloudflare WARP 40000
     if [ "$WARP_IS_OK" = false ]; then
         tip_count=$((tip_count + 1))
         echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] Cloudflare WARP Server auf Port 40000 einrichten (SOCKS5):${C_RESET}"
@@ -817,7 +884,7 @@ generate_tips() {
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
-    # Tipp 3: CPU Host-Passthrough
+    # Tipp 4: CPU Host-Passthrough
     if [ "$HAS_AES" = false ]; then
         tip_count=$((tip_count + 1))
         echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] CPU Hardware-Befehlssätze aktivieren (AES-NI fehlt):${C_RESET}"
@@ -825,7 +892,7 @@ generate_tips() {
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
-    # Tipp 4: SSD TRIM
+    # Tipp 5: SSD TRIM
     if (( $(echo "$AVG_IO_NUM < 600 && $AVG_IO_NUM > 0" | bc -l 2>/dev/null || awk -v v="$AVG_IO_NUM" 'BEGIN{print (v<600 && v>0)}') )); then
         tip_count=$((tip_count + 1))
         echo -e "${C_BORDER}│${C_RESET}  ${C_ACCENT}[Tipp $tip_count] SSD Wartung / TRIM aktivieren (Verhindert I/O-Performance-Verlust):${C_RESET}"
@@ -833,7 +900,7 @@ generate_tips() {
         echo -e "${C_BORDER}│${C_RESET}"
     fi
 
-    # Tipp 5: Speicherplatz
+    # Tipp 6: Speicherplatz
     if [ "$DISK_FULL_PERCENT" -ge 85 ]; then
         tip_count=$((tip_count + 1))
         echo -e "${C_BORDER}│${C_RESET}  ${C_RED}[Warnung] Speicherplatz zu ${DISK_FULL_PERCENT}% belegt:${C_RESET}"
@@ -844,7 +911,7 @@ generate_tips() {
     # Keine Tipps notwendig
     if [ "$tip_count" -eq 0 ]; then
         echo -e "${C_BORDER}│${C_RESET}  ${C_GREEN}✨ Hervorragend! Dein Server ist bereits optimal konfiguriert.${C_RESET}"
-        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}✔ TCP BBR ist aktiv │ ✔ WARP 40000 läuft │ ✔ Schnelle I/O & Anbindung${C_RESET}"
+        echo -e "${C_BORDER}│${C_RESET}    ${C_DIM}✔ TCP BBR ist aktiv │ ✔ WARP 40000 läuft │ ✔ Swap eingerichtet │ ✔ Schnelle I/O${C_RESET}"
     fi
 
     box_section_footer
