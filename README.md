@@ -43,19 +43,37 @@ Ein modernes, schnelles und übersichtliches Linux Server Benchmark-Skript im St
 
 ## 📥 Ausführung
 
-### Option 1: Als One-Liner ausführen
+### Option 1: Als One-Liner direkt ausführen
+
+Einfach den folgenden Befehl im Terminal deines Linux-Servers eingeben:
 
 ```bash
 # Mit curl:
-curl -sL https://deine-domain.tld/bench.sh | bash
+curl -sL https://raw.githubusercontent.com/kingcosta/bench/main/bench.sh | bash
 
-# Mit wget:
-wget -qO- https://deine-domain.tld/bench.sh | bash
+# Oder mit wget:
+wget -qO- https://raw.githubusercontent.com/kingcosta/bench/main/bench.sh | bash
 ```
 
-### Option 2: Manuell starten
+**One-Liner mit Parametern übergeben (z. B. nur System-Info oder nur WARP-Test):**
+```bash
+# Nur System-Informationen:
+curl -sL https://raw.githubusercontent.com/kingcosta/bench/main/bench.sh | bash -s -- -i
+
+# Nur Cloudflare WARP 40000 Diagnose:
+curl -sL https://raw.githubusercontent.com/kingcosta/bench/main/bench.sh | bash -s -- -w
+
+# Nur Festplatten I/O Test:
+curl -sL https://raw.githubusercontent.com/kingcosta/bench/main/bench.sh | bash -s -- -io
+```
+
+---
+
+### Option 2: Über Git klonen und ausführen
 
 ```bash
+git clone https://github.com/kingcosta/bench.git
+cd bench
 chmod +x bench.sh
 ./bench.sh
 ```
