@@ -158,8 +158,8 @@ chmod +x bench.sh
 │  Root Partition (/)       : 1.8T (Belegt: 142G [8%] │ Frei: 1.6T │ Dateisystem: ext4)
 │  I/O Scheduler            : none
 │  Erkannte Laufwerke       :
-│    • nvme0n1 (1.9T, Samsung SSD 990 PRO 2TB)
-│    • nvme1n1 (1.9T, Samsung SSD 990 PRO 2TB)
+│    • nvme0n1 (1.9T, NVME │ Samsung SSD 990 PRO 2TB)
+│    • nvme1n1 (1.9T, NVME │ Samsung SSD 990 PRO 2TB)
 └──────────────────────────────────────────────────────────────────────────┘
 
 ┌─[ 🚀  FESTPLATTEN I/O LEISTUNG (Sequentieller Schreibtest) ──────────────┐
