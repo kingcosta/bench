@@ -76,6 +76,9 @@ CPU_SHA_NUM=0
 HAS_AES=false
 IS_BBR=false
 WARP_IS_OK=false
+WARP_STATUS_TEXT=""
+WARP_IP_VAL=""
+WARP_LOC_VAL=""
 DISK_FULL_PERCENT=0
 
 # Temporäres Verzeichnis für I/O Tests
@@ -147,7 +150,11 @@ check_cloudflare_warp_status() {
     local warp_ip="N/A"
     local warp_loc="N/A"
     local warp_mode=""
-    local warp_status_summary=""
+
+    WARP_IS_OK=false
+    WARP_STATUS_TEXT=""
+    WARP_IP_VAL=""
+    WARP_LOC_VAL=""
 
     if check_tool warp-cli || [ -f /usr/bin/warp-cli ] || [ -f /usr/local/bin/warp-cli ]; then
         warp_installed=true
@@ -174,22 +181,22 @@ check_cloudflare_warp_status() {
             warp_loc=$(echo "$trace_out" | awk -F= '/^loc=/ {print $2}')
             warp_mode=$(echo "$trace_out" | awk -F= '/^warp=/ {print $2}')
             WARP_IS_OK=true
+            WARP_IP_VAL="$warp_ip"
+            WARP_LOC_VAL="$warp_loc"
         fi
     fi
 
     if [ "$warp_socks_ok" = true ]; then
-        warp_status_summary="${C_GREEN}● AKTIV${C_RESET} ${C_DIM}[${C_RESET}${C_VALUE}Port 40000 SOCKS5${C_RESET}${C_DIM}]${C_RESET} ${C_GREEN}WARP=${warp_mode}${C_RESET} ${C_DIM}➜ IP: ${C_RESET}${C_CYAN}${warp_ip}${C_RESET} ${C_DIM}(${warp_loc})${C_RESET}"
+        WARP_STATUS_TEXT="${C_GREEN}● AKTIV${C_RESET} ${C_DIM}[${C_RESET}${C_VALUE}Port 40000 SOCKS5${C_RESET}${C_DIM}]${C_RESET} ${C_GREEN}WARP=${warp_mode}${C_RESET} ${C_DIM}➜ IP: ${C_RESET}${C_CYAN}${warp_ip}${C_RESET} ${C_DIM}(${warp_loc})${C_RESET}"
     elif [ "$port_40000_open" = true ]; then
-        warp_status_summary="${C_YELLOW}▲ PORT OFFEN${C_RESET} ${C_DIM}(Port 40000 lauscht, aber keine WARP-Trace Antwort)${C_RESET}"
+        WARP_STATUS_TEXT="${C_YELLOW}▲ PORT OFFEN${C_RESET} ${C_DIM}(Port 40000 lauscht, aber keine WARP-Trace Antwort)${C_RESET}"
     elif [ "$warp_service_running" = true ]; then
-        warp_status_summary="${C_YELLOW}▲ DIENST LÄUFT${C_RESET} ${C_DIM}(warp-svc aktiv, aber Port 40000 geschlossen)${C_RESET}"
+        WARP_STATUS_TEXT="${C_YELLOW}▲ DIENST LÄUFT${C_RESET} ${C_DIM}(warp-svc aktiv, aber Port 40000 geschlossen)${C_RESET}"
     elif [ "$warp_installed" = true ]; then
-        warp_status_summary="${C_YELLOW}▲ INSTALLIERT${C_RESET} ${C_DIM}(warp-cli vorhanden, aber inaktiv)${C_RESET}"
+        WARP_STATUS_TEXT="${C_YELLOW}▲ INSTALLIERT${C_RESET} ${C_DIM}(warp-cli vorhanden, aber inaktiv)${C_RESET}"
     else
-        warp_status_summary="${C_RED}○ NICHT AKTIV${C_RESET} ${C_DIM}(Kein Dienst auf Port 40000)${C_RESET}"
+        WARP_STATUS_TEXT="${C_RED}○ NICHT AKTIV${C_RESET} ${C_DIM}(Kein Dienst auf Port 40000)${C_RESET}"
     fi
-
-    echo "$warp_status_summary"
 }
 
 # ==============================================================================
@@ -249,8 +256,8 @@ get_system_info() {
     local kernel_ver=$(uname -r)
     local arch=$(uname -m)
 
-    # WARP Status
-    local warp_status=$(check_cloudflare_warp_status)
+    # WARP Status ermitteln (direkt in Haupt-Shell ohne Subshell)
+    check_cloudflare_warp_status
 
     # Uptime & Load
     local uptime_val=$(uptime -p 2>/dev/null | sed 's/^up //' || uptime | awk -F'( |,|:)+' '{d=1; for(i=1;i<=NF;i++) {if($i=="up") {print $(i+1)" "$(i+2); d=0; break;}}}')
@@ -291,7 +298,7 @@ get_system_info() {
     box_row "Virtualisierung" "${virt_type}"
     box_row "Betriebssystem" "${os_name} (${arch})"
     box_row "Kernel-Version" "${kernel_ver}"
-    box_row "Cloudflare WARP (40000)" "${warp_status}"
+    box_row "Cloudflare WARP (40000)" "${WARP_STATUS_TEXT}"
     box_row "Systemlaufzeit" "${uptime_val}"
     box_row "Lastdurchschnitt (Load)" "${load_avg}"
     box_row "TCP Algorithmus" "${tcp_cc_display}"
@@ -461,9 +468,16 @@ get_storage_details() {
     # RAM Typ (DDR4/DDR5/ECC) falls dmidecode verfügbar und mit Rechten
     local ram_type_speed=""
     if check_tool dmidecode && [ "$EUID" -eq 0 ]; then
-        local dmi_type=$(dmidecode -t memory 2>/dev/null | grep "Type:" | grep -viE "error|unknown" | head -1 | awk '{print $2}')
-        local dmi_speed=$(dmidecode -t memory 2>/dev/null | grep "Speed:" | grep -viE "unknown|configured" | head -1 | sed 's/^[ \t]*Speed: //')
-        [ -n "$dmi_type" ] && ram_type_speed="${dmi_type} @ ${dmi_speed}"
+        local dmi_type=$(dmidecode -t memory 2>/dev/null | grep "Type:" | grep -viE "error|unknown|^[ \t]*Type:[ \t]*RAM$|^[ \t]*Type:[ \t]*Other$" | head -1 | awk '{print $2}')
+        local dmi_speed=$(dmidecode -t memory 2>/dev/null | grep "Speed:" | grep -viE "unknown|configured|none" | head -1 | sed 's/^[ \t]*Speed:[ \t]*//' | tr -d '\r\n')
+        
+        if [ -n "$dmi_type" ] && [ "$dmi_type" != "RAM" ] && [ "$dmi_type" != "Other" ] && [ "$dmi_type" != "Unknown" ]; then
+            if [ -n "$dmi_speed" ] && [ "$dmi_speed" != "Unknown" ]; then
+                ram_type_speed="${dmi_type} @ ${dmi_speed}"
+            else
+                ram_type_speed="${dmi_type}"
+            fi
+        fi
     fi
 
     local ram_display="${ram_total} ${C_DIM}(Belegt: ${ram_used} │ Frei: ${ram_avail})${C_RESET}"
@@ -480,7 +494,30 @@ get_storage_details() {
     # Physische Datenträger (NVMe, SSD, HDD, VirtIO)
     local disk_list=""
     if check_tool lsblk; then
-        disk_list=$(lsblk -d -o NAME,SIZE,TYPE,TRAN,MODEL 2>/dev/null | grep -E 'disk' | awk '{name=$1; size=$2; tran=$4; model=""; for(i=5;i<=NF;i++) model=model" "$i; if(model=="") model=tran; printf "• %s (%s, %s)\n", name, size, model}')
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            local d_name=$(echo "$line" | awk '{print $1}')
+            local d_size=$(echo "$line" | awk '{print $2}')
+            local d_tran=$(echo "$line" | awk '{print $3}')
+            local d_model=$(echo "$line" | awk '{$1=""; $2=""; $3=""; print $0}' | sed 's/^[ \t]*//;s/[ \t]*$//')
+
+            local d_info=""
+            if [ -n "$d_model" ] && [ -n "$d_tran" ] && [ "$d_tran" != "-" ]; then
+                d_info="${d_tran^^} │ ${d_model}"
+            elif [ -n "$d_model" ]; then
+                d_info="${d_model}"
+            elif [ -n "$d_tran" ] && [ "$d_tran" != "-" ]; then
+                d_info="${d_tran^^}"
+            else
+                d_info="Standard Block Device"
+            fi
+
+            if [ -n "$disk_list" ]; then
+                disk_list="${disk_list}\n• ${d_name} (${d_size}, ${d_info})"
+            else
+                disk_list="• ${d_name} (${d_size}, ${d_info})"
+            fi
+        done < <(lsblk -d -n -o NAME,SIZE,TRAN,MODEL 2>/dev/null | grep -E 'disk' | grep -v 'loop\|ram\|sr')
     fi
 
     # Root-Dateisystem
@@ -502,10 +539,10 @@ get_storage_details() {
     box_row "I/O Scheduler" "${io_scheduler:-none}"
 
     if [ -n "$disk_list" ]; then
-        echo -e "${C_BORDER}│${C_RESET}  ${C_LABEL}%-26s${C_RESET} :" "Erkannte Laufwerke"
-        while IFS= read -r line; do
-            echo -e "${C_BORDER}│${C_RESET}    ${C_VALUE}${line}${C_RESET}"
-        done <<< "$disk_list"
+        printf "${C_BORDER}│${C_RESET}  ${C_LABEL}%-26s${C_RESET} :\n" "Erkannte Laufwerke"
+        echo -e "$disk_list" | while IFS= read -r line; do
+            [ -n "$line" ] && echo -e "${C_BORDER}│${C_RESET}    ${C_VALUE}${line}${C_RESET}"
+        done
     fi
 
     box_section_footer
